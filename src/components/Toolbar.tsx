@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faArrowPointer, faQuestionCircle, faTimes } from '@fortawesome/free-solid-svg-icons';
 import { faGithub } from '@fortawesome/free-brands-svg-icons';
-import { CropSquare, RadioButtonUnchecked, ShowChart, ArrowForward, Create, Crop } from '@mui/icons-material';
+import { CropSquare, RadioButtonUnchecked, ShowChart, ArrowForward, Create } from '@mui/icons-material';
 
 type ToolType = 'select' | 'rectangle' | 'circle' | 'line' | 'arrow' | 'text' | 'pen';
 
