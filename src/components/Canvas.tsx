@@ -20,6 +20,22 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
   const [penPath, setPenPath] = useState<{ x: number; y: number }[]>([]);
   const [history, setHistory] = useState<Shape[][]>([[]]);
   const [historyIndex, setHistoryIndex] = useState(0);
+  const [isMobile, setIsMobile] = useState(false);
+  const [lastTouchTime, setLastTouchTime] = useState(0);
+
+  // Detect mobile device
+  useEffect(() => {
+    const checkMobile = () => {
+      const mobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || 
+                    window.innerWidth <= 768 || 
+                    'ontouchstart' in window;
+      setIsMobile(mobile);
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   // Save state to history
   const saveToHistory = useCallback((newShapes: Shape[]) => {
@@ -91,20 +107,26 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
       if (e.key === 'Shift') setIsShiftPressed(false);
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
+    if (!isMobile) {
+      window.addEventListener('keydown', handleKeyDown);
+      window.addEventListener('keyup', handleKeyUp);
+    }
 
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [selectedShapeId, shapes, undo, redo, saveToHistory]);
+  }, [selectedShapeId, shapes, undo, redo, saveToHistory, isMobile]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const updateCanvasSize = () => {
+      // Account for mobile viewport height issues
+      const vh = window.innerHeight * 0.01;
+      document.documentElement.style.setProperty('--vh', `${vh}px`);
+      
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
       redrawCanvas();
@@ -112,36 +134,59 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
 
     updateCanvasSize();
     window.addEventListener('resize', updateCanvasSize);
+    window.addEventListener('orientationchange', () => {
+      setTimeout(updateCanvasSize, 100); // Delay for orientation change
+    });
 
-    return () => window.removeEventListener('resize', updateCanvasSize);
+    return () => {
+      window.removeEventListener('resize', updateCanvasSize);
+      window.removeEventListener('orientationchange', updateCanvasSize);
+    };
   }, []);
 
-  const getMousePos = (e: React.MouseEvent) => {
+  const getPointerPos = (e: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
+    
+    let clientX, clientY;
+    if ('touches' in e && e.touches.length > 0) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else if ('changedTouches' in e && e.changedTouches.length > 0) {
+      clientX = e.changedTouches[0].clientX;
+      clientY = e.changedTouches[0].clientY;
+    } else {
+      clientX = (e as React.MouseEvent).clientX;
+      clientY = (e as React.MouseEvent).clientY;
+    }
+    
     return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
+      x: clientX - rect.left,
+      y: clientY - rect.top,
     };
   };
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    const { x, y } = getMousePos(e);
+  const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault();
+    const { x, y } = getPointerPos(e);
     setStartX(x);
     setStartY(y);
 
-    if (selectedTool === 'select') {
-      // Check if a shape is clicked (reverse order for top-most selection)
-      for (let i = shapes.length - 1; i >= 0; i--) {
-        const shape = shapes[i];
-        if (isInsideShape(x, y, shape)) {
-          setSelectedShapeId(shape.id);
-          setOffset({ x: x - shape.x, y: y - shape.y });
-          return;
-        }
+    // Handle double-tap for mobile selection
+    if (isMobile && 'touches' in e) {
+      const currentTime = Date.now();
+      const tapLength = currentTime - lastTouchTime;
+      if (tapLength < 500 && tapLength > 0) {
+        // Double tap - force select mode temporarily
+        handleShapeSelection(x, y);
+        return;
       }
-      setSelectedShapeId(null);
+      setLastTouchTime(currentTime);
+    }
+
+    if (selectedTool === 'select') {
+      handleShapeSelection(x, y);
     } else if (selectedTool === 'pen') {
       setIsDrawing(true);
       setPenPath([{ x, y }]);
@@ -165,13 +210,29 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
     }
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
-    const { x, y } = getMousePos(e);
+  const handleShapeSelection = (x: number, y: number) => {
+    // Check if a shape is clicked (reverse order for top-most selection)
+    for (let i = shapes.length - 1; i >= 0; i--) {
+      const shape = shapes[i];
+      if (isInsideShape(x, y, shape)) {
+        setSelectedShapeId(shape.id);
+        setOffset({ x: x - shape.x, y: y - shape.y });
+        return;
+      }
+    }
+    setSelectedShapeId(null);
+  };
+
+  const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault();
+    const { x, y } = getPointerPos(e);
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Update cursor based on tool
-    canvas.style.cursor = getCursorStyle(selectedTool, x, y);
+    // Update cursor based on tool (desktop only)
+    if (!isMobile) {
+      canvas.style.cursor = getCursorStyle(selectedTool, x, y);
+    }
 
     if (selectedTool === 'select' && selectedShapeId && !isDrawing) {
       // Move the selected shape
@@ -190,8 +251,8 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
           let width = x - startX;
           let height = y - startY;
           
-          // Perfect square when holding Shift
-          if (isShiftPressed) {
+          // Perfect square when holding Shift (desktop) or double-tap (mobile)
+          if (isShiftPressed || (isMobile && Math.abs(width - height) < 50)) {
             const size = Math.max(Math.abs(width), Math.abs(height));
             width = width < 0 ? -size : size;
             height = height < 0 ? -size : size;
@@ -210,8 +271,8 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
           let x2 = x;
           let y2 = y;
           
-          // Snap to 45-degree angles when holding Shift
-          if (isShiftPressed) {
+          // Snap to 45-degree angles when holding Shift or on mobile with similar deltas
+          if (isShiftPressed || (isMobile && shouldSnapToAngle(x - startX, y - startY))) {
             const dx = x - startX;
             const dy = y - startY;
             const angle = Math.atan2(dy, dx);
@@ -241,7 +302,16 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
     }
   };
 
-  const handleMouseUp = () => {
+  const shouldSnapToAngle = (dx: number, dy: number): boolean => {
+    const angle = Math.atan2(dy, dx);
+    const snapAngle = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+    const actualAngle = Math.atan2(dy, dx);
+    return Math.abs(actualAngle - snapAngle) < 0.2; // ~11 degrees tolerance
+  };
+
+  const handlePointerUp = (e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault();
+    
     if (isDrawing && currentShape) {
       const newShapes = [...shapes, currentShape];
       setShapes(newShapes);
@@ -257,6 +327,8 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
   };
 
   const getCursorStyle = (tool: string, x: number, y: number): string => {
+    if (isMobile) return 'default'; // Mobile doesn't need cursor changes
+    
     switch (tool) {
       case 'select':
         // Check if hovering over a shape
@@ -276,6 +348,9 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
   };
 
   const isInsideShape = (x: number, y: number, shape: Shape): boolean => {
+    // Increase touch tolerance for mobile
+    const tolerance = isMobile ? 15 : 8;
+    
     switch (shape.type) {
       case 'rectangle':
         const width = shape.width || 0;
@@ -284,19 +359,20 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
         const maxX = width < 0 ? shape.x : shape.x + width;
         const minY = height < 0 ? shape.y + height : shape.y;
         const maxY = height < 0 ? shape.y : shape.y + height;
-        return x >= minX && x <= maxX && y >= minY && y <= maxY;
+        return x >= minX - tolerance && x <= maxX + tolerance && 
+               y >= minY - tolerance && y <= maxY + tolerance;
         
       case 'circle':
         const dx = x - shape.x;
         const dy = y - shape.y;
-        return Math.sqrt(dx * dx + dy * dy) <= (shape.radius || 0);
+        return Math.sqrt(dx * dx + dy * dy) <= (shape.radius || 0) + tolerance;
         
       case 'line':
       case 'arrow':
         const distance = pointToLineDistance(
           x, y, shape.x, shape.y, shape.x2 || 0, shape.y2 || 0
         );
-        return distance < 8; // Increased tolerance for better UX
+        return distance < tolerance;
         
       case 'pen':
         if (!shape.path) return false;
@@ -306,7 +382,7 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
             shape.path[i].x, shape.path[i].y,
             shape.path[i + 1].x, shape.path[i + 1].y
           );
-          if (dist < 8) return true;
+          if (dist < tolerance) return true;
         }
         return false;
         
@@ -350,9 +426,10 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
   const drawShape = (context: CanvasRenderingContext2D, shape: Shape, isSelected: boolean = false) => {
     context.save();
     
-    // Style settings
+    // Style settings - adjust for mobile
+    const lineWidth = isMobile ? (isSelected ? 3 : 2) : (isSelected ? 2 : 1.5);
     context.strokeStyle = isSelected ? '#4285f4' : '#1a1a1a';
-    context.lineWidth = isSelected ? 2 : 1.5;
+    context.lineWidth = lineWidth;
     context.lineCap = 'round';
     context.lineJoin = 'round';
     
@@ -384,9 +461,9 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
         context.moveTo(shape.x, shape.y);
         context.lineTo(x2, y2);
         
-        // Draw arrowhead
+        // Draw arrowhead - larger for mobile
         const angle = Math.atan2(y2 - shape.y, x2 - shape.x);
-        const headLength = 15;
+        const headLength = isMobile ? 20 : 15;
         
         context.moveTo(x2, y2);
         context.lineTo(
@@ -424,7 +501,7 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
     context.fillStyle = '#fafafa';
     context.fillRect(0, 0, canvas.width, canvas.height);
     
-    // Draw grid (optional - Excalidraw style)
+    // Draw grid - smaller on mobile
     drawGrid(context, canvas.width, canvas.height);
     
     drawAllShapes(context);
@@ -432,10 +509,10 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
     if (currentShape) {
       drawShape(context, currentShape);
     }
-  }, [shapes, currentShape, selectedShapeId]);
+  }, [shapes, currentShape, selectedShapeId, isMobile]);
 
   const drawGrid = (context: CanvasRenderingContext2D, width: number, height: number) => {
-    const gridSize = 20;
+    const gridSize = isMobile ? 15 : 20;
     context.strokeStyle = '#e5e5e5';
     context.lineWidth = 0.5;
     
@@ -459,24 +536,61 @@ const Canvas: React.FC<CanvasProps> = ({ selectedTool, onHistoryChange }) => {
   }, [redrawCanvas]);
 
   return (
-    <div style={{ width: '100vw', height: '100vh', overflow: 'hidden' }}>
+    <div style={{ 
+      width: '100vw', 
+      height: '100vh', 
+      overflow: 'hidden',
+      position: 'relative'
+    }}>
       <canvas
         ref={canvasRef}
         style={{ 
           display: 'block',
           background: '#fafafa',
-          touchAction: 'none' // Prevent touch scrolling
+          touchAction: 'none', // Prevent touch scrolling and zooming
+          WebkitTouchCallout: 'none', // Prevent iOS touch callout
+          WebkitUserSelect: 'none', // Prevent text selection
+          userSelect: 'none'
         }}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
+        // Mouse events
+        onMouseDown={handlePointerDown}
+        onMouseMove={handlePointerMove}
+        onMouseUp={handlePointerUp}
         onMouseLeave={() => {
-          // Stop drawing when mouse leaves canvas
           if (isDrawing) {
-            handleMouseUp();
+            handlePointerUp({} as React.MouseEvent);
+          }
+        }}
+        // Touch events
+        onTouchStart={handlePointerDown}
+        onTouchMove={handlePointerMove}
+        onTouchEnd={handlePointerUp}
+        onTouchCancel={() => {
+          if (isDrawing) {
+            handlePointerUp({} as React.TouchEvent);
           }
         }}
       />
+      
+      {/* Mobile indicator for selected shapes */}
+      {isMobile && selectedShapeId && (
+        <div style={{
+          position: 'absolute',
+          top: '10px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          backgroundColor: 'rgba(66, 133, 244, 0.9)',
+          color: 'white',
+          padding: '8px 16px',
+          borderRadius: '20px',
+          fontSize: '14px',
+          fontWeight: '500',
+          zIndex: 1000,
+          pointerEvents: 'none'
+        }}>
+          Shape Selected - Double tap to deselect
+        </div>
+      )}
     </div>
   );
 };
